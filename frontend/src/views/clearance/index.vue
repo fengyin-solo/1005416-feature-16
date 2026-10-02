@@ -24,10 +24,35 @@
       </span>
     </p>
 
-    <form class="filter-bar" @submit.prevent="reload">
-      <label v-for="field in filterFields" :key="field" class="filter-item">
-        <span>{{ field }}</span>
-        <input v-model="filters[field]" :placeholder="`按${field}检索`" />
+    <form class="filter-bar" @submit.prevent="search">
+      <label class="filter-item">
+        <span>核销编号</span>
+        <input v-model="filters.核销编号" placeholder="按核销编号检索" />
+      </label>
+      <label class="filter-item">
+        <span>核销依据</span>
+        <input v-model="filters.核销依据" placeholder="按核销依据检索" />
+      </label>
+      <label class="filter-item">
+        <span>复核人</span>
+        <input v-model="filters.复核人" placeholder="按复核人检索" />
+      </label>
+      <div class="filter-item">
+        <span>核销结论（可多选）</span>
+        <div class="check-group">
+          <label v-for="option in conclusionOptions" :key="option" class="check-item">
+            <input v-model="filters.核销结论" type="checkbox" :value="option" />
+            {{ option }}
+          </label>
+        </div>
+      </div>
+      <label class="filter-item">
+        <span>复核日期</span>
+        <span class="date-range">
+          <input v-model="filters.复核日期起" type="date" />
+          <span>至</span>
+          <input v-model="filters.复核日期止" type="date" />
+        </span>
       </label>
       <button class="btn" type="submit">查询</button>
       <button class="btn ghost" type="button" @click="resetFilters">重置条件</button>
@@ -58,14 +83,36 @@
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 2" class="empty-state">暂无隐患核销数据，可先登记核销单</td>
+          <td :colspan="columns.length + 2" class="empty-state">
+            {{ missMessage || '暂无隐患核销数据，可先登记核销单' }}
+          </td>
         </tr>
       </tbody>
     </table>
 
     <footer class="page-foot">
       <span>共 {{ total }} 条隐患核销记录</span>
-      <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
+      <div class="pager">
+        <button class="btn" type="button" :disabled="page <= 1" @click="goPage(page - 1)">上一页</button>
+        <button
+          v-for="item in pageCount"
+          :key="item"
+          class="btn"
+          :class="{ current: item === page }"
+          type="button"
+          @click="goPage(item)"
+        >
+          {{ item }}
+        </button>
+        <button class="btn" type="button" :disabled="page >= pageCount" @click="goPage(page + 1)">下一页</button>
+        <select v-model.number="size" @change="search">
+          <option v-for="option in sizeOptions" :key="option" :value="option">每页 {{ option }} 条</option>
+        </select>
+      </div>
+      <span class="foot-messages">
+        <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
+        <span v-else-if="noticeMessage" class="notice-text">{{ noticeMessage }}</span>
+      </span>
     </footer>
   </section>
 </template>
@@ -75,9 +122,10 @@ import { computed, onMounted, ref } from 'vue'
 
 import {
   downloadEntries,
+  listClearanceEntries,
   listEntries,
   moduleMeta,
-  runAction as applyAction,
+  runClearanceAction,
 } from '@/api/local-service'
 import type { EntryRow } from '@/data/types'
 
@@ -85,22 +133,62 @@ const meta = moduleMeta('clearance')
 const columns = ["核销编号", "所属隐患点", "核销依据", "复核人", "复核日期", "核销结论", "归档日期", "核销状态"]
 const actions = ["提交复核", "确认核销", "驳回申请"]
 const statuses = ["待复核", "复核中", "已核销", "已驳回"]
-const stats = [{"label": "待复核核销单", "value": 0}, {"label": "已核销隐患点", "value": 0}, {"label": "已驳回申请", "value": 0}]
+const sizeOptions = [5, 10, 20]
 
 const rows = ref<EntryRow[]>([])
+const legendRows = ref<EntryRow[]>([])
 const total = ref(0)
+const page = ref(1)
+const size = ref(5)
+const failedCondition = ref('')
 const errorMessage = ref('')
-const filters = ref<Record<string, string>>({})
-const filterFields = columns.slice(0, 3)
+const noticeMessage = ref('')
+const filters = ref({
+  核销编号: '',
+  核销依据: '',
+  复核人: '',
+  核销结论: [] as string[],
+  复核日期起: '',
+  复核日期止: '',
+})
+
+const stats = computed(() => [
+  { label: '待复核核销单', value: countStatus('待复核') },
+  { label: '已核销隐患点', value: countStatus('已核销') },
+  { label: '已驳回申请', value: countStatus('已驳回') },
+])
 const statusSummary = computed(() =>
-  statuses.map((status: string) => ({
-    status,
-    count: rows.value.filter((row) => String(row.status) === status).length,
-  })),
+  statuses.map((status: string) => ({ status, count: countStatus(status) })),
+)
+const conclusionOptions = computed(() => [
+  ...new Set(legendRows.value.map((row) => String(row['核销结论'] ?? '')).filter((item) => item !== '')),
+])
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / size.value)))
+const missMessage = computed(() =>
+  failedCondition.value === '' ? '' : `没有命中：条件「${failedCondition.value}」没过，请调整该条件后重新查询`,
 )
 
+function countStatus(status: string): number {
+  return legendRows.value.filter((row) => String(row.status) === status).length
+}
+
 function resetFilters() {
-  filters.value = {}
+  filters.value = { 核销编号: '', 核销依据: '', 复核人: '', 核销结论: [], 复核日期起: '', 复核日期止: '' }
+  search()
+}
+
+function search() {
+  page.value = 1
+  errorMessage.value = ''
+  noticeMessage.value = ''
+  reload()
+}
+
+function goPage(target: number) {
+  if (target < 1 || target > pageCount.value || target === page.value) {
+    return
+  }
+  page.value = target
   reload()
 }
 
@@ -114,20 +202,25 @@ function openCreate() {
 
 function runAction(action: string, row: EntryRow) {
   errorMessage.value = ''
-  const result = applyAction(meta.key, Number(row.id), action)
-  if (!result.ok) {
+  noticeMessage.value = ''
+  const result = runClearanceAction(Number(row.id), action)
+  if (result.ok) {
+    noticeMessage.value = result.message
+  } else {
     errorMessage.value = result.message
-    return
   }
+  // 越级拦截、极值退回也会改数据，无论成败都刷新一遍
   reload()
 }
 
 function reload() {
-  errorMessage.value = ''
   try {
-    const payload = listEntries(meta.key, filters.value)
+    const payload = listClearanceEntries({ ...filters.value, page: page.value, size: size.value })
     rows.value = payload.items
     total.value = payload.total
+    page.value = payload.page
+    failedCondition.value = payload.failedCondition
+    legendRows.value = listEntries(meta.key).items
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '隐患核销列表读取失败'
   }
