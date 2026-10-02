@@ -19,6 +19,9 @@
     </div>
 
     <p class="status-legend">
+      <span v-if="rebuildCount" class="legend-item rebuild-legend">
+        核销后重新建档：{{ rebuildCount }} 条（核销依据与隐患核销同源）
+      </span>
       <span v-for="item in statusSummary" :key="item.status" class="legend-item">
         {{ item.status }}：{{ item.count }}
       </span>
@@ -36,14 +39,14 @@
     <table class="data-table">
       <thead>
         <tr>
-          <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th v-for="column in displayColumns" :key="column">{{ column }}</th>
           <th>当前状态</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="row in rows" :key="String(row.id)">
-          <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+        <tr v-for="row in rows" :key="String(row.id)" :class="{ 'rebuild-row': row['形变状态'] === '重新建档' }">
+          <td v-for="column in displayColumns" :key="column">{{ row[column] ?? '—' }}</td>
           <td>{{ row.status }}</td>
           <td class="row-actions">
             <button
@@ -58,7 +61,7 @@
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 2" class="empty-state">暂无边坡形变数据，可先登记边坡观测点</td>
+          <td :colspan="displayColumns.length + 2" class="empty-state">暂无边坡形变数据，可先登记边坡观测点</td>
         </tr>
       </tbody>
     </table>
@@ -83,6 +86,8 @@ import type { EntryRow } from '@/data/types'
 
 const meta = moduleMeta('slope')
 const columns = ["测点编号", "所属隐患点", "监测方式", "本期位移", "累计位移", "观测日期", "观测人", "形变状态"]
+// 确认核销落过来的「重新建档」项带核销编号与核销依据（与隐患核销同源），出现时多展两列。
+const rebuildColumns = ["核销编号", "核销依据"]
 const actions = ["提交观测", "标记加剧", "办理停测"]
 const statuses = ["待观测", "正常", "变形加剧", "已停测"]
 const stats = [{"label": "待观测测点", "value": 0}, {"label": "变形加剧测点", "value": 0}, {"label": "本期最大位移", "value": 0}]
@@ -92,6 +97,13 @@ const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+const hasRebuild = computed(() => rows.value.some((row) => String(row['形变状态']) === '重新建档'))
+const displayColumns = computed(() =>
+  hasRebuild.value ? [...columns, ...rebuildColumns] : columns,
+)
+const rebuildCount = computed(
+  () => rows.value.filter((row) => String(row['形变状态']) === '重新建档').length,
+)
 const statusSummary = computed(() =>
   statuses.map((status: string) => ({
     status,
@@ -135,3 +147,13 @@ function reload() {
 
 onMounted(reload)
 </script>
+
+<style scoped>
+.rebuild-row {
+  background: #ecfdf3;
+}
+.rebuild-legend {
+  background: #d1fadf;
+  color: #027a48;
+}
+</style>
